@@ -34,10 +34,6 @@ if arguments.contains("--watch-lid") {
     }
     exit(RuntimeServices.watchLid(parent: request.parent, lease: request.lease, durationSeconds: request.durationSeconds, intentID: request.intent))
 }
-if let operation = option("--ambient-helper") {
-    do { guard ["enable","restore"].contains(operation) else { exit(2) }; try RuntimeServices.ambientHelper(enabled:operation == "enable"); exit(0) }
-    catch { FileHandle.standardError.write(Data(error.localizedDescription.utf8)); exit(1) }
-}
 if arguments.contains("--verify-hardware") {
     let directory = AgentBridge.directory.appendingPathComponent("verification-"+UUID().uuidString)
     let device = LogoDevice(directory:directory)

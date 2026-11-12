@@ -211,50 +211,17 @@ enum RuntimeServices {
         if record != nil { try removeJournal() }
     }
 
+    /// Runs a fixed script of system tools with administrator rights. The
+    /// app's own executable is never started as root; see AmbientOverrideScript.
     static func authorizedAmbient(_ enabled: Bool) throws {
-        guard let binary = Bundle.main.executableURL?.path else { throw failure("App executable missing.") }
-        let command = "'" + binary.replacingOccurrences(of: "'", with: "'\\''") + "' --ambient-helper " + (enabled ? "enable" : "restore")
-        let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let script = NSAppleScript(source: "do shell script \"\(escaped)\" with prompt \"Backlit wants to \(enabled ? "unlock" : "restore") the logo brightness range.\" with administrator privileges")!
+        let shell = try AmbientOverrideScript.make(enabled: enabled)
+        guard let script = NSAppleScript(source: AmbientOverrideScript.appleScript(enabled: enabled, shell: shell)) else {
+            throw failure("The brightness-limit request could not be prepared.")
+        }
         var error: NSDictionary?
         script.executeAndReturnError(&error)
         if let error { throw AmbientAuthorizationFailure(scriptError: error) }
     }
 
-    /// This branch only executes under the system's administrator authorization.
-    static func ambientHelper(enabled: Bool) throws {
-        guard geteuid() == 0 else { throw failure("Administrator authorization is required.") }
-        let manager = FileManager.default
-        let folder = URL(fileURLWithPath: "/var/db/local.backlit")
-        if manager.fileExists(atPath: folder.path) {
-            let attr = try manager.attributesOfItem(atPath: folder.path)
-            guard attr[.type] as? FileAttributeType == .typeDirectory, (attr[.ownerAccountID] as? NSNumber)?.intValue == 0 else { throw failure("Invalid recovery directory.") }
-        } else { try manager.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) }
-        let backup = folder.appendingPathComponent("ambient.plist")
-        let domain = "com.apple.CoreBrightness" as CFString
-        let keys = ["LEPWMLuxToMinNitsRestrictionMapping", "LEPWMLuxToMaxNitsRestrictionMapping"]
-        if manager.fileExists(atPath: backup.path) {
-            let attr = try manager.attributesOfItem(atPath: backup.path)
-            guard attr[.type] as? FileAttributeType == .typeRegular else { throw failure("Invalid recovery file.") }
-        }
-        if enabled && !manager.fileExists(atPath: backup.path) {
-            var values: [String: Any] = [:]
-            for key in keys { if let value = CFPreferencesCopyAppValue(key as CFString, domain) { values[key] = value } }
-            let bytes = try PropertyListSerialization.data(fromPropertyList: values, format: .xml, options: 0)
-            try bytes.write(to: backup, options: .atomic)
-            try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
-        }
-        guard manager.fileExists(atPath: backup.path) else { throw failure("No saved brightness limits to restore.") }
-        let originals = try PropertyListSerialization.propertyList(from: Data(contentsOf: backup), format: nil) as? [String: Any] ?? [:]
-        for (i,key) in keys.enumerated() {
-            let value: Any? = enabled ? [[0.0, i == 0 ? 12.5 : 1000.0], [Double(Float.greatestFiniteMagnitude), i == 0 ? 12.5 : 1000.0]] : originals[key]
-            CFPreferencesSetAppValue(key as CFString, value as CFPropertyList?, domain)
-        }
-        guard CFPreferencesAppSynchronize(domain) else { throw failure("Could not save brightness limits; recovery is retained.") }
-        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/killall"); process.arguments = ["-TERM", "corebrightnessd"]
-        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-        try process.run(); process.waitUntilExit()
-        if !enabled { try manager.removeItem(at: backup) }
-    }
     static func failure(_ text: String) -> NSError { NSError(domain: "Backlit", code: 1, userInfo: [NSLocalizedDescriptionKey:text]) }
 }
