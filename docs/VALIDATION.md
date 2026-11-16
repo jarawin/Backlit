@@ -1,8 +1,8 @@
 # Backlit validation
 
-Current source candidate: **0.2.7, build 45**. Build 45 has not been installed on the test Mac. The installed app is build 44; its live MCP results are distinguished below from candidate-only checks.
+Version: **0.2.7, build 45**. Installed-app GUI and physical smoke checks for build 45 remain pending, including normal startup/quit, sleep/wake and closed-lid handback. The live GUI evidence below is from installed build 44 and is distinguished from build-45 headless and isolated checks.
 
-Publication requires the exact source in a clean commit and a passing [Build and package workflow](https://github.com/t0nyz0/Backlit/actions) for the matching `v0.2.7` tag. The local results below are not a passing tagged workflow or publication approval. BUILD-INFO.json records artifact source identity and signing status; SHA256SUMS.txt covers package bytes.
+Publication requires the exact source in a clean commit and a passing [Build and package workflow](https://github.com/t0nyz0/Backlit/actions) for the matching `v0.2.7` tag. Check the matching tagged workflow for its exact commit and outcome; local checks are recorded separately below. BUILD-INFO.json records artifact source identity and signing status; SHA256SUMS.txt covers package bytes.
 
 ## Current local checks
 
@@ -10,10 +10,10 @@ Publication requires the exact source in a clean commit and a passing [Build and
 - **21 Python tests passed**, with zero failures or skips. Two source-export regressions inspect the actual ZIP from a disposable committed repository, including public-document links, committed bytes, provenance, private-file exclusion and absence of Git history. Restoring the earlier allowlist makes the regression fail on missing MCP documentation.
 - The optimized macOS 14 arm64 bundle built successfully and passed strict nested code-signature verification. It remains ad-hoc signed with the hardened runtime.
 - The headless MCP subprocess checks passed initialization, the captured Codex runtime capabilities, strict arguments, negotiated versions, EOF, signals and message/output bounds. Those checks do not call a live light tool.
-- Public-source checks found no Gitleaks findings across 240 selected files. The source export includes both MCP and shortcut setup documents. Documentation/link checks and 13 media images passed. A scan of 106 bundled files found no private host paths.
-- The unchanged Stream Deck integration retains its last full build-44 result: typecheck, 16 tests, build/package validation and dependency audit passed. That evidence does not replace the integration steps in the exact release workflow.
+- Public-source checks found no Gitleaks findings across 241 committed public files plus the generated provenance record. The source export includes MCP, shortcut and icon documentation; all 36 archived local links resolve. Documentation checks and 13 media images passed. A scan of 106 bundled files found no private host paths.
+- Canonical Stream Deck checks passed typecheck, 16 tests, build/package validation and dependency audit. The exact release workflow reruns these checks.
 
-No candidate-45 tag, published release or passing tagged CI run is established by these local checks.
+Local checks do not replace the matching tag/CI gate for publication.
 
 ## MCP acceptance
 

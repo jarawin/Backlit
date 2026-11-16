@@ -17,4 +17,6 @@
 - Closed-lid lighting is capped at 30 minutes and may keep the built-in display lit. Independent closed-lid brightness is still being evaluated.
 - macOS may ask you to re-enable Backlit under Input Monitoring after updating.
 
+Installed-app GUI and physical smoke checks for build 45, including startup/quit, sleep/wake and closed-lid handback, remain pending.
+
 This build is ad-hoc signed with the hardened runtime, not Developer ID signed or notarized. See [validation](https://github.com/t0nyz0/Backlit/blob/v0.2.7/docs/VALIDATION.md) for completed checks and remaining hardware acceptance.
