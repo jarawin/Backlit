@@ -1,20 +1,63 @@
 # Backlit validation
 
-Version: **0.2.7**, build 41. Publication requires a passing [Build and package workflow](https://github.com/t0nyz0/Backlit/actions) for the exact `v0.2.7` tag. Check that run for its commit and results. BUILD-INFO.json records artifact source identity and signing status; SHA256SUMS.txt covers package bytes.
+Current source candidate: **0.2.7, build 45**. Build 45 has not been installed on the test Mac. The installed app is build 44; its live MCP results are distinguished below from candidate-only checks.
+
+Publication requires the exact source in a clean commit and a passing [Build and package workflow](https://github.com/t0nyz0/Backlit/actions) for the matching `v0.2.7` tag. The local results below are not a passing tagged workflow or publication approval. BUILD-INFO.json records artifact source identity and signing status; SHA256SUMS.txt covers package bytes.
+
+## Current local checks
+
+- **673 Swift tests passed**, with zero failures. Fourteen new recovery regressions exercise the production model with injected native operations; they do not trigger power or hardware failures on the live Mac.
+- **21 Python tests passed**, with zero failures or skips. Two source-export regressions inspect the actual ZIP from a disposable committed repository, including public-document links, committed bytes, provenance, private-file exclusion and absence of Git history. Restoring the earlier allowlist makes the regression fail on missing MCP documentation.
+- The optimized macOS 14 arm64 bundle built successfully and passed strict nested code-signature verification. It remains ad-hoc signed with the hardened runtime.
+- The headless MCP subprocess checks passed initialization, the captured Codex runtime capabilities, strict arguments, negotiated versions, EOF, signals and message/output bounds. Those checks do not call a live light tool.
+- Public-source checks found no Gitleaks findings across 240 selected files. The source export includes both MCP and shortcut setup documents. Documentation/link checks and 13 media images passed. A scan of 106 bundled files found no private host paths.
+- The unchanged Stream Deck integration retains its last full build-44 result: typecheck, 16 tests, build/package validation and dependency audit passed. That evidence does not replace the integration steps in the exact release workflow.
+
+No candidate-45 tag, published release or passing tagged CI run is established by these local checks.
+
+## MCP acceptance
+
+Installed build 44 was exercised with **Codex CLI 0.155.1**, using temporary invocation-only MCP settings. Codex connected, discovered all four tools, read the running app's status, set manual brightness to 50%, then returned it to 100%. Readback reported `applied`; Steady mode and the power setting were preserved. The checks did not register a permanent Codex server or change its persistent configuration. API output is not an optical measurement of emitted light.
+
+Candidate 45's headless MCP binary also connected through the actual Codex client and read the unchanged installed build-44 GUI. This verifies candidate transport compatibility and its connection to the existing bridge. **It does not exercise the candidate-45 GUI, its recovery admission or native hardware behavior.** Claude Code user-session acceptance remains unverified.
+
+Fixtures cover control policy, local Music/Typing authorization, automatic Battery brightness, recovery ownership, separate AI/Home Assistant keys, key replacement, cancellation, redirects, response bounds and real stdio pipes. The installed-client preference lookup and Codex's object-valued experimental capability are covered by regressions. MCP setup and access controls are described in [Local AI control](MCP.md).
+
+## Recovery checks
+
+Candidate 45 blocks output and unsafe commands when recovery is orphaned or cannot be confirmed. The admission applies to startup, rearming, effect frames, MCP, shortcuts, ambient changes, readiness and quitting. Healthy owned recovery journals remain usable; dead owners enter cleanup. Recovery reports success only after both restoration stages succeed and a fresh check finds no remaining journal. Turning the light off, withdrawing control or quitting during repair prevents later automatic rearming.
+
+Fourteen isolated regressions cover partial failure after logo cleanup, orphaned or corrupt journals, retained journals, healthy ownership, dead or pending helpers, update resume and user withdrawal. These tests use injected native operations and temporary files/preferences. Native power failure was not induced on the test Mac.
+
+The ambient override invokes fixed system tools rather than elevating the app executable. Restore checks original values and originally absent keys through fresh readback before removing the saved copy. Failure retains the backup for retry. Tests cover failed deletion, silent write mismatch, unreadable readback, an already absent key and partial restoration. The real administrator prompt, system preference writes and brightness-service restart have not been exercised on build 45.
+
+## Shortcut checks
+
+Fixtures cover saved/custom/disabled bindings, registration conflicts, action IDs, recording suspension, manual bounds, Battery and power preservation, and recovery guards. The experimental hardware-key policy covers exact Shift, native/plain/Option–Shift preservation, paired key-up, changed modifiers, unknown repeats, repeat bounds and denied startup. Failed-update recovery restarts a saved enabled Shift filter without prompting; a denied restart stays off and reports the issue.
+
+Synthetic events remain in memory and are never posted. Installing build 44 and passing these fixtures do not establish real shortcut dispatch in another foreground app. Accessibility/Input Monitoring behavior, actual Shift-only screen suppression, keyboard/Fn/Touch Bar variants, held repeats, permission revocation, sleep/wake and quit handback remain unverified. Hardware interception starts off. See [shortcut setup and acceptance](SHORTCUTS.md).
+
+## Current limits and remaining acceptance
+
+- Build 45 still needs normal installed startup, quit and relaunch acceptance with settings preserved and no unowned recovery left behind.
+- Sleep/wake, closed-lid native handback and the 30-minute expiry need physical acceptance on the installed candidate. Do not intentionally force a native power failure on the live Mac to reproduce an injected regression.
+- Closed-lid lighting may leave the built-in screen lit. Earlier testing observed it off after Backlit quit. The feature has a 30-minute maximum and an in-app warning; a time limit does not guarantee safe temperatures. Independent closed-lid brightness remains unqualified.
+- Some failed-cleanup paths retain a manual recovery requirement. Saved fault pauses are not automatically cleared by duration migration.
+- Visual logo output and independence from display brightness, ordinary global shortcut dispatch, and experimental Shift-key suppression/repeats need physical observation. Returned `applied` state and hardware readback do not measure emitted light.
+- CoreBrightness Objective-C adapters check exact method signatures, observed on macOS 27.2.1. The private C multitouch ABI remains assumed; other OS/hardware combinations are not qualified. Trackpads are enumerated at initialization, so newly attached devices may require relaunch. Global screen-touch detection is unsupported.
+- Hardware apply and restoration still run from the main actor. Native waits and recovery can affect responsiveness; no whole-app latency or battery-life guarantee is established.
+- Home Assistant credentials are stored in Keychain, but its optional LAN transport is plaintext TCP. LAN sharing is off by default. AI MCP requests remain loopback-only.
+- The app is ad-hoc signed and not Developer ID signed or notarized. Library validation is disabled for bundled Sparkle. In-app updates remain disabled without a trusted publisher key and signed feed; manual installation is the available path.
+
+## Earlier validation history
+
+The following results describe earlier builds. They are retained as background and do not qualify candidate 45's changed recovery or substitute for its remaining acceptance.
+
+### Builds 34–41
 
 Builds 38 and 39 were installed on the test Mac. On build 38, selecting Music started and stopped audio capture about twice a second: each beat that crossed zero produced a frame still waiting to observe its output, which was treated as hardware not ready. Build 39 keeps readiness across such brief waits and is otherwise identical to build 38, the build exercised for everything else below. Build 40 changes only Home Assistant pairing-key replacement: sharing now stops before the stored key changes and stays off if a new key cannot be created, so a failed replacement cannot leave the old key working. That path is covered by automated tests, including one against the real listener, and has not been exercised by hand. Observed on that Mac: the app and its recovery helper start under the hardened runtime; with the lid open the logo holds the requested level; with closed-lid lighting on, closing and reopening the lid recovers without an error. A read-only recording of one 35-second closure showed the logo enabled for the whole closure at about 12% duty, which is consistent with the closed session using the native ambient-driven curve, while the built-in display was not reported asleep. Earlier internal builds 35 and 36 stopped light control on that lid transition; build 37 retries the cleanup and build 38 corrects the pause wording. These are functional observations on one Mac, not photometric measurements.
 
-## Current limits
-
-- Closed-lid lighting may leave the built-in screen lit. The screen was observed off after Backlit quit. The feature is retained with a 30-minute maximum and an explicit in-app warning; this limits duration but does not guarantee safe temperatures.
-- Independent closed-lid brightness and physical sleep/wake/native handback remain unqualified. The separate finite-output experiments are excluded from this app.
-- Some failed-cleanup paths retain a manual recovery requirement rather than completing automatic recovery. Saved fault pauses are not automatically cleared by the duration migration.
-- The administrator-only ambient override now runs a fixed script of system tools by absolute path instead of starting the app’s own executable as root. It still asks for an administrator password each time. A modified copy of the app could ask for that password with its own commands, as any modified app could; an ad-hoc signed app cannot prevent that. All native adapters now require exact method signatures; those signatures were read on macOS 27.2.1 only, so another macOS version may report closed-lid controls as unsupported.
-
-## Release checks
-
-Version 0.2.7, build 41 changes only the administrator step of the ambient override; everything else is the 0.2.6 code. The source passed 583 Swift tests with zero failures. Eight new cases run the real administrator script without administrator rights, against a temporary folder and a throwaway settings domain: saving the original limits once, writing the flat limits, restoring, restoring from a saved copy written by the 0.2.6 helper, refusing a wrong-owner or symlinked folder and a symlinked or unreadable saved copy, and checking that only system-owned tools are called. The same script was also run end to end through AppleScript without administrator rights. The privileged path itself, with the real password prompt, system limits and brightness-service restart, has not been exercised on build 41.
-
+The baseline 0.2.7, build 41 changed only the administrator step of the ambient override; everything else was the 0.2.6 code. That baseline passed 583 Swift tests with zero failures. Eight new cases run the real administrator script without administrator rights, against a temporary folder and a throwaway settings domain: saving the original limits once, writing the flat limits, restoring, restoring from a saved copy written by the 0.2.6 helper, refusing a wrong-owner or symlinked folder and a symlinked or unreadable saved copy, and checking that only system-owned tools are called. The same script was also run end to end through AppleScript without administrator rights. The privileged path itself, with the real password prompt, system limits and brightness-service restart, has not been exercised on build 41.
 
 Build 40 source passed 575 Swift tests with zero failures, including 29 new cases for lid-transition session replacement, support-file pruning, signature matching, Music capture readiness and pairing-key replacement, and 19 Python tests with three optional signing fixtures skipped. Every step of the workflow’s verify job was also replayed on a clean clone of the build 38 source and passed, including the Stream Deck typecheck, tests, audit, build and package, and the same six release files were produced; the three update-signature tests need a tool only the workflow provisions and were skipped locally. Hardened-runtime signing was checked on a copy of the app and on the packaged ZIP: it loads, strict signature verification passes and an injected library is refused. On the test Mac the owner confirmed that Typing works on build 38 and that Music follows playback on build 39, both under the hardened runtime; the system log for that Music session shows a single audio capture that ran for about two minutes. The owner also confirmed that the administrator prompt for the brightness-limit override appears on build 39. The pairing-key change uses the real Keychain and has no automated test. With library validation disabled for Sparkle, the bundled framework is not protected against replacement.
 
@@ -26,7 +69,6 @@ The build 35 cap is tested with inert clocks and temporary preferences/files, no
 
 The unchanged integrations retain build 32 evidence: 16 Python tests passed with three optional signing fixtures skipped, and Stream Deck typecheck, 16 tests, build/package validation and zero-vulnerability audit passed. Those integration checks must also pass in the exact release CI. Existing screenshots remain explicitly labeled as older captures. Local source/build checks do not substitute for a passing release workflow on the exact published commit.
 
-## Earlier validation history
 
 The sections below describe prior checks and limitations; they are not a current release approval and do not override the blockers above.
 
@@ -98,11 +140,11 @@ Music and interactive effects use a capped 20 Hz feedback loop; Breathe, Battery
 
 The app targets Apple silicon/macOS 14+ and uses compatibility-sensitive private hardware/audio interfaces. Global screen-touch is unsupported. It is ad-hoc signed and not notarized. Sparkle requires a pinned publisher public key, signed feed/notes/archives, and a trusted manual bootstrap before updating older public versions. Current same-source hashes do not establish authenticity.
 
-## Current candidate follow-up checks
+## Earlier candidate follow-up checks
 
 Saved closed-lid intent tests cover explicit opt-in, separate-instance relaunch/upgrade, remaining continuous-time deadlines, invalid or expired records, startup while already closed, and expiry before another effect frame. Input tests cover production agent/contact/typing output and a 64-combination locked/sleeping/console/closed-lid eligibility matrix. These are isolated tests, not physical upgrade or external-input acceptance.
 
-Physically confirmed during candidate development: Steady/On, exact Off, Breathe and Music with the lid closed. Battery at full charge and Agents idle, working, and present-attention states were subsequently confirmed by the user with the lid closed. External Trackpad/typing still need final physical validation; compatible external input hardware and required macOS permissions are prerequisites. No claim that an inaccessible built-in trackpad works with a closed lid.
+Physically confirmed during earlier candidate development, not repeated on build 45: Steady/On, exact Off, Breathe and Music with the lid closed. Battery at full charge and Agents idle, working, and present-attention states were subsequently confirmed by the user with the lid closed. External Trackpad/typing still need final physical validation; compatible external input hardware and required macOS permissions are prerequisites. No claim that an inaccessible built-in trackpad works with a closed lid.
 
 The installer-style quit/relaunch path was physically checked after the run-loop scheduling fix: the first quit completed, recovery journals were removed, and relaunch connected without a recovery warning. The remembered closed-lid choice resumed.
 

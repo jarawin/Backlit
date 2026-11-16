@@ -1,7 +1,7 @@
 <p align="center"><img src="docs/header.png" width="1200" alt="Backlit — MacBook PROLED logo light control for macOS. A real MacBook with its illuminated logo."></p>
 <p align="center">
 <img src="https://img.shields.io/badge/source-0.2.7-9a7400?style=flat" alt="Source 0.2.7">
-<img src="https://img.shields.io/badge/local_tests-583_passing-2d6085?style=flat" alt="583 local tests passing">
+<img src="https://img.shields.io/badge/local_tests-673_passing-2d6085?style=flat" alt="673 local Swift tests passing">
 <img src="https://img.shields.io/badge/local_build-verified-55565f?style=flat" alt="Local build verified">
 <img src="https://img.shields.io/badge/macOS-14.0_target-55565f?style=flat" alt="macOS 14.0 target">
 <img src="https://img.shields.io/badge/Swift-6-a7440c?style=flat" alt="Swift 6">
@@ -9,6 +9,9 @@
 </p>
 
 Control the brightness of a compatible MacBook PROLED’s illuminated Apple logo from the menu bar. Backlit is a native Swift app with an original interface, local processing, and no account requirement.
+
+- Optional local MCP control lets compatible AI assistants read status and adjust power, brightness and behavior.
+- Configurable brightness-up/down shortcuts, plus a separate, off-by-default experimental Shift + hardware brightness option.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/light-dark.png">
@@ -48,13 +51,15 @@ The logo supports white light. Brightness and timing are adjustable; RGB colors 
 
 <p align="center"><img src="docs/media/menu-light.png" width="320" alt="Backlit menu with a small logo preview, behavior picker, and brightness controls"></p>
 
-The menu includes a small preview and controls for the selected behavior. Battery shows its actual battery-driven output; the other behaviors retain manual brightness. Backlit’s own outlined status icon remains visible when dim; its center follows current output. **Control–Command–B** or **Option-click** toggles the light. The shortcut is configurable. You can hide the menu bar icon in Settings and reopen Backlit from the Dock or Applications.
+The menu includes a small preview and controls for the selected behavior. Battery shows its actual battery-driven output; the other behaviors retain manual brightness. Backlit’s own outlined status icon remains visible when dim; its center follows current output. **Control–Command–B** or **Option-click** toggles the light. Toggle and brightness-up/down shortcuts are configurable in Settings. You can hide the menu bar icon in Settings and reopen Backlit from the Dock or Applications.
 
-Launch connects compatible hardware automatically. Quit restores the previous logo curve. If restoration fails, Backlit retains a recovery record and offers Restore Light.
+**Control–Command–Up/Down Arrow** changes manual logo brightness by five percentage points while preserving its behavior and on/off state. Battery stays automatic. A separate, off-by-default experimental **Shift + hardware brightness keys** option requires Accessibility, Input Monitoring and physical keyboard validation before screen suppression can be claimed. See [shortcut setup and limits](docs/SHORTCUTS.md).
+
+Launch connects compatible hardware automatically. Quit restores the previous logo curve. If restoration fails, Backlit retains a recovery record and offers Restore Light. Incomplete closed-lid cleanup keeps output paused until recovery is confirmed. Turning the light off or quitting during repair prevents automatic restart.
 
 ## Connections
 
-Claude Code and Codex have separate, reversible status hooks. Existing hooks are preserved. They send a session identifier and status—not prompts, code, or tool output. Codex requires hook review/trust in its settings. Codex live-session compatibility remains unverified.
+Claude Code and Codex have separate, reversible status hooks. Existing hooks are preserved. They send a session identifier and status—not prompts, code, or tool output. Codex requires hook review/trust in its settings. Live status-hook delivery in Codex remains unverified.
 
 Opt-in local Backlit links and a separately packaged Stream Deck plugin provide toggle, on/off, brightness and behavior controls. Stream Deck remains experimental; real key/profile acceptance is unverified. The four native Shortcuts actions are unavailable in this ad-hoc signed build. Extracted action metadata does not establish discovery.
 
@@ -66,6 +71,16 @@ Opt-in local Backlit links and a separately packaged Stream Deck plugin provide 
 </details>
 
 An optional [Home Assistant integration](docs/HOME-ASSISTANT.md) exposes a light and status sensors over a local, authenticated connection. It is off by default.
+
+This source build also includes optional [MCP control](docs/MCP.md) for local AI assistants. Open **Connections → AI control** and choose **Status only** or **Allow light changes**. AI access starts off and has a separate Keychain key. The four tools read status, set power, set manual brightness and select an available behavior; existing agent status hooks stay separate.
+
+Keep Backlit open. For Codex, run:
+
+```sh
+codex mcp add backlit -- /Applications/Backlit.app/Contents/MacOS/Backlit --mcp
+```
+
+Start a new local Codex session, check `/mcp`, then ask **“Read Backlit's status through MCP.”** For Claude Code, use **Copy Claude Code Setup** in Backlit. This is a local stdio connection; registering it does not automatically connect a cloud chat.
 
 <details>
 <summary>Connections screenshot</summary>
@@ -95,6 +110,8 @@ A physically illuminated, independently controlled logo is required. The macOS 1
 Selecting Music starts system audio automatically after macOS permits it; switching to another behavior stops capture. If access fails, use Retry System Audio or open the privacy settings shown in the app. On macOS 14.2+, a private Core Audio tap captures playback without display/window capture or microphone input. No audio is saved or uploaded.
 
 Optional login launch, closed-lid operation, and an administrator-authorized brightness-limit override are in Settings. Closed-lid lighting keeps the keyboard dark and restores the real lid state when stopped. Choose a duration from 1 to 30 minutes. The default and maximum are 30 minutes; sleep counts toward the timer and relaunching does not reset it. Low battery, Low Power Mode and heat also stop the session. The built-in screen may remain lit while closed. Other hardware, lid transitions and administrator behavior still need validation. Global screen-touch detection is not included. See [validation and known limits](docs/VALIDATION.md).
+
+The brightness-limit override runs only built-in macOS tools with administrator authorization. Original limits are saved, and the saved copy is kept until restoration is verified.
 
 ## Updates
 

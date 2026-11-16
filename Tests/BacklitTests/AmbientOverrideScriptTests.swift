@@ -34,10 +34,13 @@ final class AmbientOverrideScriptTests: XCTestCase {
         process.waitUntilExit()
         return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
     }
-    private func run(enabled: Bool, owner: UInt32? = nil, directory other: URL? = nil) throws -> (status: Int32, output: String) {
+    private func run(enabled: Bool, owner: UInt32? = nil, directory other: URL? = nil,
+                     injectingFailure: ((String) -> String)? = nil) throws -> (status: Int32, output: String) {
         let script = try AmbientOverrideScript.make(enabled: enabled, directory: (other ?? directory).path, domain: domain,
             ownerID: owner ?? getuid(), restart: "/usr/bin/true")
-        return try tool("/bin/sh", ["-c", script])
+        // Faults are injected only into this unprivileged, throwaway-domain test.
+        // Production still invokes fixed system tools without injection hooks.
+        return try tool("/bin/sh", ["-c", injectingFailure?(script) ?? script])
     }
     private func settings() throws -> [String: Any] {
         let file = directory.deletingLastPathComponent().appendingPathComponent("export-" + UUID().uuidString + ".plist")
@@ -101,6 +104,93 @@ final class AmbientOverrideScriptTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
     }
 
+    func testFailedDeletionRetainsBackupAndSuccessfulRetryRestores() throws {
+        try write(minimum, originalMinimum)
+        XCTAssertEqual(try run(enabled: true).status, 0)
+        let originalBackup = try Data(contentsOf: backup)
+
+        let result = try run(enabled: false, injectingFailure: {
+            $0.replacingOccurrences(of: "/usr/bin/defaults delete \"$domain\" \"$key\" >/dev/null 2>&1 || true",
+                                    with: "/usr/bin/false || true")
+        })
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.output.contains("originally absent is still present"), result.output)
+        XCTAssertEqual(try Data(contentsOf: backup), originalBackup)
+        XCTAssertNotNil(try settings()[maximum], "The failed deletion really left the override in place")
+
+        let retried = try run(enabled: false)
+        XCTAssertEqual(retried.status, 0, retried.output)
+        XCTAssertNil(try settings()[maximum])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    func testOriginallyAbsentKeyAlreadyRemovedIsSuccessful() throws {
+        try write(minimum, originalMinimum)
+        XCTAssertEqual(try run(enabled: true).status, 0)
+        XCTAssertEqual(try tool("/usr/bin/defaults", ["delete", domain, maximum]).status, 0)
+
+        let result = try run(enabled: false)
+        XCTAssertEqual(result.status, 0, result.output)
+        XCTAssertNil(try settings()[maximum])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    func testSilentWriteFailureIsDetectedByReadbackAndRetainsBackup() throws {
+        try write(minimum, originalMinimum)
+        XCTAssertEqual(try run(enabled: true).status, 0)
+        let originalBackup = try Data(contentsOf: backup)
+
+        let result = try run(enabled: false, injectingFailure: {
+            $0.replacingOccurrences(of: "/usr/bin/defaults write \"$domain\" \"$key\" \"$saved\"",
+                                    with: "/usr/bin/true")
+        })
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.output.contains("did not match"), result.output)
+        XCTAssertEqual(try Data(contentsOf: backup), originalBackup)
+        XCTAssertEqual(numbers(try settings()[minimum]), [[0, 12.5], [Double(Float.greatestFiniteMagnitude), 12.5]])
+    }
+
+    func testReadbackFailureRetainsBackupEvenAfterWritesSucceed() throws {
+        try write(minimum, originalMinimum)
+        XCTAssertEqual(try run(enabled: true).status, 0)
+        let originalBackup = try Data(contentsOf: backup)
+
+        let result = try run(enabled: false, injectingFailure: {
+            $0.replacingOccurrences(of: "/usr/bin/defaults export \"$domain\" \"$work/restored.plist\"",
+                                    with: "/usr/bin/false")
+        })
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.output.contains("could not be read"), result.output)
+        XCTAssertEqual(try Data(contentsOf: backup), originalBackup)
+        XCTAssertEqual(numbers(try settings()[minimum]), [[0, 1.5], [200, 12.5], [Double(Float.greatestFiniteMagnitude), 40]])
+
+        let retried = try run(enabled: false)
+        XCTAssertEqual(retried.status, 0, retried.output)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    func testPartialWriteFailureRetainsCompleteBackupForRetry() throws {
+        try write(minimum, originalMinimum)
+        try write(maximum, AmbientOverrideScript.flatLimit("500"))
+        XCTAssertEqual(try run(enabled: true).status, 0)
+        let originalBackup = try Data(contentsOf: backup)
+
+        let result = try run(enabled: false, injectingFailure: {
+            $0.replacingOccurrences(of: "/usr/bin/defaults write \"$domain\" \"$key\" \"$saved\"",
+                                    with: "if [ \"$key\" = \"\(self.maximum)\" ]; then /usr/bin/false; else /usr/bin/defaults write \"$domain\" \"$key\" \"$saved\"; fi")
+        })
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertEqual(try Data(contentsOf: backup), originalBackup)
+        let partial = try settings()
+        XCTAssertEqual(numbers(partial[minimum]), [[0, 1.5], [200, 12.5], [Double(Float.greatestFiniteMagnitude), 40]])
+        XCTAssertEqual(numbers(partial[maximum]), [[0, 1000], [Double(Float.greatestFiniteMagnitude), 1000]])
+
+        let retried = try run(enabled: false)
+        XCTAssertEqual(retried.status, 0, retried.output)
+        XCTAssertEqual(numbers(try settings()[maximum]), [[0, 500], [Double(Float.greatestFiniteMagnitude), 500]])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+    }
+
     func testRestoreWithoutASavedCopyFailsAndChangesNothing() throws {
         try write(minimum, originalMinimum)
         let result = try run(enabled: false)
@@ -153,7 +243,7 @@ final class AmbientOverrideScriptTests: XCTestCase {
             XCTAssertFalse(script.contains(Bundle.main.bundlePath))
             // Every external command is one of these system tools, by absolute path.
             let allowed: Set<String> = ["/usr/bin/stat", "/bin/mkdir", "/usr/bin/mktemp", "/bin/rm", "/usr/bin/sed",
-                "/usr/bin/defaults", "/usr/bin/plutil", "/bin/chmod", "/bin/mv", "/usr/bin/killall"]
+                "/usr/bin/defaults", "/usr/bin/plutil", "/usr/bin/cmp", "/bin/chmod", "/bin/mv", "/usr/bin/killall"]
             let used = Set(script.components(separatedBy: CharacterSet(charactersIn: " \n\"'()`;|&$")).filter { $0.hasPrefix("/usr/") || $0.hasPrefix("/bin/") })
             XCTAssertTrue(used.isSubset(of: allowed.union(["/usr/bin:/bin:/usr/sbin:/sbin"])), "Unexpected tool: \(used.subtracting(allowed))")
             for path in allowed where used.contains(path) {

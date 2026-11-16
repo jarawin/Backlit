@@ -83,3 +83,26 @@ struct AutomationConnections: View {
         }.font(.system(size: 12))
     }
 }
+
+struct MCPConnections: View {
+    @ObservedObject var model: AppModel
+    var body: some View {
+        Surface("AI control") {
+            Picker("Allow AI connections", selection:Binding(get:{model.mcpAccess},set:{model.configureMCPAccess($0)})) {
+                ForEach(MCPAccess.allCases) { access in Text(access.title).tag(access) }
+            }
+            Text("Connect a local AI assistant to check this light or change it when you ask. Off by default.")
+                .font(.system(size:11)).foregroundStyle(.secondary)
+            if model.mcpAccess != .off {
+                HStack {
+                    Button("Copy Codex Setup") { model.copyMCPSetup(claude:false) }
+                    Button("Copy Claude Code Setup") { model.copyMCPSetup(claude:true) }
+                    Spacer()
+                    Button("Replace AI Key") { model.regenerateMCPKey() }
+                }.font(.system(size:11))
+                Text("Your assistant may send light status to its model provider. Music and Typing need access enabled in Backlit first. Status hooks stay separate.")
+                    .font(.system(size:11)).foregroundStyle(.secondary)
+            }
+        }.font(.system(size:12))
+    }
+}

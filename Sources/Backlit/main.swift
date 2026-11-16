@@ -4,6 +4,13 @@ import Carbon
 import IOKit
 
 let arguments = CommandLine.arguments
+if arguments.contains("--mcp") {
+    guard Array(arguments.dropFirst()) == ["--mcp"] else {
+        FileHandle.standardError.write(Data("Use Backlit --mcp without other options.\n".utf8)); exit(2)
+    }
+    Task { exit(await BacklitMCPServer.run()) }
+    dispatchMain()
+}
 func option(_ key: String) -> String? {
     guard let i = arguments.firstIndex(of:key), arguments.count > i+1 else { return nil }; return arguments[i+1]
 }
@@ -71,9 +78,7 @@ if arguments.contains("--verify-hardware") {
     var lastIconStep = -1
     var lastTooltipUpdate = -Double.infinity
     var lastTooltipStatus = ""
-    var hotkey: EventHotKeyRef?
-    var eventHandler: EventHandlerRef?
-    var observing: NSObjectProtocol?
+    let shortcuts = MacGlobalShortcuts()
     var quitObserver: NSObjectProtocol?
     private var pendingTerminationReason: QuitReason?
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -99,7 +104,6 @@ if arguments.contains("--verify-hardware") {
         updateMenuBarVisibility()
         popover.contentViewController = NSHostingController(rootView:MenuView(model:model)); popover.behavior = .transient
         updateIcon(); installShortcut()
-        observing = NotificationCenter.default.addObserver(forName:.init("Backlit.Shortcut"),object:nil,queue:.main){[weak self] _ in Task { @MainActor in self?.installShortcut() }}
         quitObserver = DistributedNotificationCenter.default().addObserver(forName:.init("local.backlit.quit"),object:nil,queue:.main) { [weak self] _ in Task { @MainActor in self?.model.quit() } }
         AutomationRouter.shared.handler = { [weak model] command in
             guard let model else { throw RuntimeServices.failure("Backlit is not ready.") }
@@ -181,13 +185,17 @@ if arguments.contains("--verify-hardware") {
     func installShortcut() {
         // An isolated preview must not claim a system-wide keyboard shortcut.
         guard !model.demo else { return }
-        if let hotkey {UnregisterEventHotKey(hotkey)}
-        if eventHandler == nil {
-            var spec = EventTypeSpec(eventClass:OSType(kEventClassKeyboard),eventKind:UInt32(kEventHotKeyPressed))
-            InstallEventHandler(GetApplicationEventTarget(),{_,_,_ in Task { @MainActor in AppDelegate.shared?.model.enabled.toggle() }; return noErr},1,&spec,nil,&eventHandler)
+        shortcuts.onAction = { [weak model] action in model?.performLogoShortcut(action) }
+        model.onShortcutChange = { [weak self] action,binding in
+            guard let self else { return "Global shortcuts are unavailable." }
+            return self.shortcuts.replace(binding,action:action)
         }
-        let result = RegisterEventHotKey(model.shortcutKey,model.shortcutModifiers,EventHotKeyID(signature:0x424c4954,id:1),GetApplicationEventTarget(),0,&hotkey)
-        if result != noErr {model.notice="The shortcut is already in use. Choose another in Settings."}
+        model.onShortcutRecordingChange = { [weak self] recording in
+            guard let self else { return }
+            if recording { self.shortcuts.suspend() }
+            else { self.model.shortcutIssues = self.shortcuts.resume() }
+        }
+        model.shortcutIssues = shortcuts.start(model.logoShortcuts)
     }
     @objc func quit() {model.quit()}
     @objc func settings() {model.selectedPage="settings";showWindow()}

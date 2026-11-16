@@ -13,6 +13,7 @@ Functional research used:
 - https://www.apple.com/legal/intellectual-property/guidelinesfor3rdparties.html for brand review. Backlit's app/status identity uses original artwork; this is not a claim of legal clearance.
 - https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps and the installed Core Audio SDK for the private-to-process audio tap/aggregate lifecycle.
 - https://developers.home-assistant.io/ for light entities, config flows, and coordinator behavior.
+- Apple's public CarbonEvents/CGEvent headers, event-tap documentation and https://github.com/MonitorControl/MediaKeyTap for auxiliary brightness event interoperability and active session-filter precedent. Backlit's exact-modifier pairing policy, shortcut registration/controller and tests are original; no MediaKeyTap implementation is bundled.
 
 The Buy Me a Coffee badge is the official asset at https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png. It links to https://buymeacoffee.com/tonyz, verified from the owner's https://t0nyz.com site. That third-party badge is not covered by the project's PolyForm Perimeter license.
 
@@ -21,5 +22,7 @@ Header photograph (`docs/header.png` and the underlying original photo): © 2026
 The public repository starts with a clean source snapshot. Private reference screenshots and planning documents are retained only outside its tracked files and history. Agent configuration locations and event names follow the agents’ published formats; Backlit owns its adapter, validation, merging, and launch code.
 
 Sparkle 2.10.1 provides the in-app update framework, under its MIT license and included third-party notices. See [Sparkle license](licenses/Sparkle.txt) and [upstream](https://github.com/sparkle-project/Sparkle).
+
+MCP Swift SDK 0.12.1 provides the local agent protocol. Swift System, Swift Log and EventSource are its linked dependencies. Their upstream license and notice texts are included in [MCP dependency notices](licenses/MCP-Dependencies.txt) and copied into the app bundle. Versions and revisions are pinned in Package.resolved. See [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk/tree/0.12.1).
 
 - Public interoperability research on CoreBrightness clamshell and keyboard routing: https://github.com/Ark0N/LogoLight/blob/7018b92503f936cfc5956bef4a74cb730078a9d5/docs/corebrightnessd.md . Backlit implements its own bounded watchdog, state machine, recovery and tests; no third-party implementation was copied.

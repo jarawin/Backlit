@@ -83,7 +83,7 @@ codesign --verify --strict "$app_bundle/Contents/Frameworks/Sparkle.framework"
 cp LICENSE "$app_bundle/Contents/Resources/LICENSE"
 cp docs/ATTRIBUTION.md "$app_bundle/Contents/Resources/ATTRIBUTION.md"
 mkdir -p "$app_bundle/Contents/Resources/licenses"
-cp docs/licenses/Sparkle.txt "$app_bundle/Contents/Resources/licenses/Sparkle.txt"
+cp docs/licenses/*.txt "$app_bundle/Contents/Resources/licenses/"
 if [ -f assets/Backlit.icns ]; then cp assets/Backlit.icns "$app_bundle/Contents/Resources/Backlit.icns"; fi
 mkdir -p "$app_bundle/Contents/Resources/HomeAssistant"
 rsync -a --delete --delete-excluded --exclude=__pycache__ --exclude='*.pyc' homeassistant/ "$app_bundle/Contents/Resources/HomeAssistant/"

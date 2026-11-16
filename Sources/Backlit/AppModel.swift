@@ -90,9 +90,9 @@ enum MusicCapturePolicy {
         batteryResponse.reset(); musicResponse.reset(); synchronizeTyping(); configureTimer(); requestFrame() } }
     @Published var enabled = true { didSet {
         guard !isLoading else{return}
-        if !enabled { invalidateLightReadyNotice() }
+        if !enabled { repairResumeAllowed = false; invalidateLightReadyNotice() }
         defaults.set(enabled,forKey:"enabled")
-        if !ambientChangeInProgress && !demo && device.available && !device.needsRecovery { controlWanted = true }
+        if !ambientChangeInProgress && canReconnectLight { controlWanted = true }
         synchronizeTouch()
         if !enabled && (audioRunning || audioStarting) {stopAudio()}
         synchronizeTyping(); requestFrame(); configureTimer()
@@ -152,6 +152,9 @@ enum MusicCapturePolicy {
     @Published var bridgeEnabled = false
     @Published var bridgeLAN = false
     @Published var bridgeStatus = "Not connected"
+    @Published private(set) var mcpAccess: MCPAccess = .off
+    private var agentRateLimit = ExternalControlRateLimit()
+    private let externalControlObservation: (() -> ExternalControlContext)?
     @Published var language = "en" { didSet { save() } }
     @Published var appearance = "system" { didSet { save() } }
     @Published var error: String?
@@ -179,9 +182,16 @@ enum MusicCapturePolicy {
         if storedNotice == Self.lightReadyNotice { storedNotice = nil }
     }
     @Published var pausedReason: String?
-    @Published var shortcutKey: UInt32 = 11
-    @Published var shortcutModifiers: UInt32 = 4352
-    @Published var shortcutLabel = "⌃⌘B"
+    @Published private(set) var logoShortcuts: [LogoShortcutAction:LogoShortcut] = [:]
+    @Published var shortcutIssues: [LogoShortcutAction:String] = [:]
+    @Published private(set) var recordingShortcut = false
+    var shortcutLabel: String { logoShortcuts[.toggle]?.label ?? "Off" }
+    var onShortcutChange: ((LogoShortcutAction,LogoShortcut?)->String?)?
+    var onShortcutRecordingChange: ((Bool)->Void)?
+    let shiftBrightnessKeys = ShiftBrightnessKeys()
+    var shiftBrightnessDriver: ShiftBrightnessDriver?
+    @Published private(set) var shiftBrightnessEnabled = false
+    @Published private(set) var shiftBrightnessStatus = "Hardware brightness keys use macOS."
     @Published var selectedPage = "light"
     var openWindow: (() -> Void)?
     var onIconChange: (() -> Void)?
@@ -199,9 +209,27 @@ enum MusicCapturePolicy {
     private(set) var hardwareApplyInProgress = false
     var hardwareOperationInProgress: Bool { hardwareRecoveryInProgress || hardwareApplyInProgress || ambientAuthorizationInProgress }
     private(set) var lidCleanupInProgress = false
-    var lifecycleAllowsFrames: Bool { !isStopping && !hardwareOperationInProgress && !savedLidCheckInProgress && !lidCleanupInProgress && !lidStopFailed }
+    var lifecycleAllowsFrames: Bool { !isStopping && !hardwareOperationInProgress && !savedLidCheckInProgress && !lidCleanupInProgress && !lidStopFailed && !recoveryBlocksAdmission && !ownedLidAwaitingCleanup }
     private let hardwareRestore: (() throws -> Void)?
     private let hardwareApply: ((Double, Bool) throws -> FadeApplyResult)?
+    private let recoveryEnvironment: LightRecoveryEnvironment?
+    private var restorationUnconfirmed = false
+    private var repairResumeAllowed = false
+    private var logoNeedsRecovery: Bool { recoveryEnvironment?.logoNeedsRecovery() ?? (!demo && device.needsRecovery) }
+    private var lidNeedsRecovery: Bool {
+        recoveryEnvironment?.lidNeedsRecovery() ?? (!demo && LidWatcherStopper.journalNeedsRecovery(AgentBridge.directory.appendingPathComponent("lid-recovery.json")))
+    }
+    var unownedLidRecoveryRequired: Bool {
+        LightRecoveryAdmission.unownedLidNeedsRepair(journalNeedsRecovery: lidNeedsRecovery, hasOwnedWatcher: watcher != nil)
+    }
+    private var ownedLidAwaitingCleanup: Bool { watcher != nil && watcher?.isRunning == false }
+    private var recoveryBlocksAdmission: Bool { unownedLidRecoveryRequired || restorationUnconfirmed }
+    var needsLightRecovery: Bool { logoNeedsRecovery || recoveryBlocksAdmission || lidStopFailed || hardwareFailure != nil }
+    private var recoveryHardwareAvailable: Bool { recoveryEnvironment?.hardwareAvailable() ?? (!demo && device.available) }
+    private var canReconnectLight: Bool {
+        recoveryHardwareAvailable && !logoNeedsRecovery && !recoveryBlocksAdmission && !ownedLidAwaitingCleanup &&
+            !lidStopPending && !lidCleanupInProgress && !lidStopFailed && !lidStopper.hasOutstandingFilesystemWork && !savedLidPauseNeedsReview
+    }
     private let ambientAuthorization: ((Bool) throws -> Void)?
     private var ambientChangeInProgress = false
     private var ambientAuthorizationInProgress = false
@@ -257,6 +285,7 @@ enum MusicCapturePolicy {
         },
         failed: { [weak self] error in
             guard let self else { return }
+            self.audioConsent = false
             self.audioPermissionHelp = true
             self.audioCaptureError = SystemAudio.friendly(error).localizedDescription
             self.error = self.audioCaptureError
@@ -282,6 +311,8 @@ enum MusicCapturePolicy {
     var savedLidRecoveryUnconfirmed: Bool { lidIntentController.intent?.savedPause?.needsQualifiedHandback == true }
     func t(_ english: String, _ chinese: String) -> String { isChinese ? chinese : english }
     var status: String {
+        if recoveryBlocksAdmission { return "Restore your light to finish the previous lid session" }
+        if ownedLidAwaitingCleanup { return "Waiting for closed-lid cleanup" }
         if automaticRecoveryPending || reconnecting { return lifecycleInterrupted ? "Waiting to reconnect after wake" : "Reconnecting to your MacBook" }
         if let hardwareFailure { return "Logo control unavailable: \(hardwareFailure)" }
         if let pausedReason { return pausedReason }
@@ -293,7 +324,7 @@ enum MusicCapturePolicy {
         }
         if demo { return t("Preview · logo unchanged","預覽・不會更改標誌") }
         if !device.available { return t("Preview · compatible logo not found","預覽・未找到相容標誌") }
-        if !controlWanted && device.needsRecovery { return "Restore your light to continue" }
+        if !controlWanted && needsLightRecovery { return "Restore your light to continue" }
         if !enabled { return t("Logo off","標誌已關閉") }
         guard controlling else { return "Connecting to your MacBook" }
         switch lastHardwareResult {
@@ -325,7 +356,11 @@ enum MusicCapturePolicy {
          hardwareRestore: (() throws -> Void)? = nil, lidIntentEnvironment: LidIntentEnvironment? = nil,
          hardwareApply: ((Double, Bool) throws -> FadeApplyResult)? = nil,
          lidPauseRecoveryEnvironment: LidPauseRecoveryEnvironment? = nil,
-         ambientAuthorization: ((Bool) throws -> Void)? = nil) {
+         ambientAuthorization: ((Bool) throws -> Void)? = nil,
+         externalControlObservation: (() -> ExternalControlContext)? = nil,
+         recoveryEnvironment: LightRecoveryEnvironment? = nil) {
+        self.externalControlObservation = externalControlObservation
+        self.recoveryEnvironment = demo ? recoveryEnvironment : nil
         self.hardwareRestore = hardwareRestore
         self.hardwareApply = hardwareApply
         self.ambientAuthorization = ambientAuthorization
@@ -365,6 +400,7 @@ enum MusicCapturePolicy {
         typingEnabled = self.defaults.bool(forKey: "typing.enabled")
         if mode == .touch && !touchAvailable { mode = .steady }
         automationsEnabled = self.defaults.bool(forKey: "automation.enabled")
+        mcpAccess = MCPAccess(rawValue:self.defaults.string(forKey:"mcp.access") ?? "off") ?? .off
         if self.defaults.object(forKey: "music.automatic") != nil { musicAutomatic = self.defaults.bool(forKey: "music.automatic") }
         if let raw = self.defaults.string(forKey: "music.preset"), let preset = MusicResponsePreset(rawValue: raw) { musicPreset = preset }
         if let data = self.defaults.data(forKey: "battery.response"), let options = try? JSONDecoder().decode(BatteryResponseOptions.self, from: data) { batteryOptions = options }
@@ -372,11 +408,7 @@ enum MusicCapturePolicy {
         language = self.defaults.string(forKey:"language") ?? "en"
         appearance = self.defaults.string(forKey:"appearance") ?? "system"
         if self.defaults.string(forKey:"installation.id") == nil { self.defaults.set(UUID().uuidString,forKey:"installation.id") }
-        if self.defaults.object(forKey:"shortcut.key") != nil {
-            shortcutKey = UInt32(self.defaults.integer(forKey:"shortcut.key"))
-            shortcutModifiers = UInt32(self.defaults.integer(forKey:"shortcut.modifiers"))
-            shortcutLabel = self.defaults.string(forKey:"shortcut.label") ?? "⌃⌘B"
-        }
+        logoShortcuts = LogoShortcutPreferences.load(self.defaults)
         ambientUnlocked = self.defaults.bool(forKey:"ambientUnlocked")
         touch.onChange = { [weak self] down,count in
             guard let self else{return}
@@ -407,21 +439,37 @@ enum MusicCapturePolicy {
         typing.onStatus = { [weak self] status in self?.typingStatus = status }
         audio.onFailure = { [weak self] text, token in Task { @MainActor in
             guard let self, self.audioRunning, self.audio.acceptsFailure(token) else { return }
+            self.audioConsent = false
             self.audioSession.requestStop()
             self.audioRunning = false; self.audioPermissionHelp = true
             self.audioCaptureError = text; self.error = text; self.requestFrame()
         } }
         bridge.state = { [weak self] in self?.apiState() ?? [:] }
         bridge.command = { [weak self] command in
-            guard let self else { return }
-            guard self.controlling, self.pausedReason == nil else { throw RuntimeServices.failure("Open Backlit on the Mac and restore its light if a recovery message is shown.") }
-            if command.mode == .music && !self.audioConsent { throw RuntimeServices.failure("Select Music in Backlit and allow system audio before selecting it remotely.") }
-            if let mode = command.mode { guard self.availableModes.contains(mode) else { throw RuntimeServices.failure("That mode is unavailable on this Mac.") }; self.mode = mode }
-            if let brightness = command.brightness { self.brightness = brightness }
-            if let enabled = command.enabled { self.enabled = enabled }
-            self.tick()
+            guard let self, self.bridgeEnabled else { throw ExternalControlError(.accessDisabled, "Enable Home Assistant in Connections first.") }
+            try self.performExternal(command)
+        }
+        bridge.agentState = { [weak self] in
+            guard let self else { throw ExternalControlError(.unavailable, "Backlit is not ready.") }
+            return self.agentLightState()
+        }
+        bridge.agentCommand = { [weak self] command in
+            guard let self, self.mcpAccess == .control else { throw ExternalControlError(.accessDisabled, "Allow light changes in Backlit Connections first.") }
+            try self.performExternal(command, agent: true)
         }
         bridge.onStatus = { [weak self] text in self?.bridgeStatus = text }
+        shiftBrightnessKeys.onAction = { [weak self] action in self?.performLogoShortcut(action) }
+        shiftBrightnessKeys.onFailure = { [weak self] message in
+            guard let self else { return }
+            self.shiftBrightnessEnabled = false; self.defaults.set(false,forKey:"shortcut.shiftBrightness.enabled")
+            self.shiftBrightnessStatus = message; self.notice = message
+        }
+        bridge.onFailure = { [weak self] text in
+            guard let self else { return }
+            self.bridge.stop(); self.bridgeEnabled = false; self.mcpAccess = .off
+            self.defaults.set(false,forKey:"bridge.enabled"); self.defaults.set("off",forKey:"mcp.access")
+            self.error = "Local connections were switched off because the listener failed. " + text
+        }
         self.lidStopper.onResult = { [weak self] result in
             guard let self else { return }
             self.lidStopFailed = !result.safeToQuit
@@ -457,18 +505,19 @@ enum MusicCapturePolicy {
     func start() {
         let center = NSWorkspace.shared.notificationCenter
         let states: [(Notification.Name,(AppModel)->Void)] = [
-            (NSWorkspace.screensDidSleepNotification,{$0.screenSleeping = true;$0.touch.reset()}),
+            (NSWorkspace.screensDidSleepNotification,{$0.screenSleeping = true;$0.touch.reset();$0.shiftBrightnessKeys.resetGesture()}),
             (NSWorkspace.screensDidWakeNotification,{$0.screenSleeping = false;$0.touch.reset()}),
-            (NSWorkspace.willSleepNotification,{$0.systemSleeping = true; $0.touch.reset(); $0.stopAudio(); $0.stopLid(); $0.releaseHardware()}),
+            (NSWorkspace.willSleepNotification,{$0.systemSleeping = true; $0.touch.reset(); $0.shiftBrightnessKeys.resetGesture(); $0.stopAudio(); $0.stopLid(); $0.releaseHardware()}),
             (NSWorkspace.didWakeNotification,{$0.systemSleeping = false;$0.touch.reset()}),
-            (NSWorkspace.sessionDidResignActiveNotification,{$0.consoleActive = false; $0.touch.reset(); $0.stopAudio(); $0.releaseHardware()}),
+            (NSWorkspace.sessionDidResignActiveNotification,{$0.consoleActive = false; $0.touch.reset(); $0.shiftBrightnessKeys.resetGesture(); $0.stopAudio(); $0.releaseHardware()}),
             (NSWorkspace.sessionDidBecomeActiveNotification,{$0.consoleActive = true;$0.touch.reset()})
         ]
         for (name,action) in states { observers.append(center.addObserver(forName:name,object:nil,queue:.main){[weak self] _ in Task { @MainActor in if let self { action(self); self.lastSourceSample = -Double.infinity; self.synchronizeTouch(); self.synchronizeTyping(); self.requestFrame() } }}) }
-        controlWanted = !demo && device.available && !device.needsRecovery
+        controlWanted = canReconnectLight
         configureTimer()
-        if !demo && !controlWanted && device.needsRecovery { notice = "A previous logo session needs restoration. Use Restore Light to pick up where you left off." }
-        if !demo && self.defaults.bool(forKey:"bridge.enabled") { configureBridge(enabled:true,lan:self.defaults.bool(forKey:"bridge.lan")) }
+        if !controlWanted && needsLightRecovery { notice = "A previous light session needs restoration. Use Restore Light to finish its cleanup." }
+        if !demo { configureBridge(enabled:self.defaults.bool(forKey:"bridge.enabled"),lan:self.defaults.bool(forKey:"bridge.lan")) }
+        if !demo, defaults.bool(forKey:"shortcut.shiftBrightness.enabled") { configureShiftBrightness(true,prompt:false) }
         startPowerMonitoring()
         if !demo {
             // Before the first tick can create a session: leftovers from
@@ -500,10 +549,22 @@ enum MusicCapturePolicy {
     }
     func tick() {
         defer { if !lightReady { invalidateLightReadyNotice() } }
+        // A stopped retained helper must enter its existing verified cleanup
+        // path before the dead-owner admission guard can withhold frames.
+        if !hardwareOperationInProgress, !isStopping, !lidCleanupInProgress, !lidStopFailed,
+           let watcher, !watcher.isRunning, !lidStopPending { stopLid(); return }
+        if recoveryBlocksAdmission {
+            controlWanted = false
+            if !hardwareOperationInProgress {
+                musicHardwareReady = false
+                if audioRunning || audioStarting { stopAudio() }
+                synchronizeTouch(); synchronizeTyping()
+            }
+            return
+        }
         guard lifecycleAllowsFrames else { return }
         if controlOffPending { controlOffPending = false; stopLid(); releaseHardware(); return }
         if lidOffPending { stopLid(); return }
-        if let watcher, !watcher.isRunning, !lidStopPending { stopLid(); return }
         tickCount += 1
         let now = ProcessInfo.processInfo.systemUptime
         if now-lastSourceSample >= 1 {
@@ -515,7 +576,7 @@ enum MusicCapturePolicy {
                 if !batteryAvailable { batteryResponse.reset() }
             }
             if !demo && now-lastAgentPrune >= 600 { pruneAgentFiles() }
-            if mode == .agents || bridgeEnabled {
+            if mode == .agents || bridgeEnabled || mcpAccess != .off {
                 let nextAgents=demo ? [] : AgentBridge.events().sorted{$0.time<$1.time}
                 if agents != nextAgents {agents=nextAgents}
             }
@@ -695,28 +756,148 @@ enum MusicCapturePolicy {
         if restart { synchronizeTyping(forceRestart: enabled) }
     }
     func performAutomation(_ command: AutomationCommand) throws {
-        guard automationsEnabled, !demo else { throw RuntimeServices.failure("Enable Backlit links and other apps in Connections first.") }
-        guard device.available, controlWanted, !device.needsRecovery else { throw RuntimeServices.failure("Open Backlit and restore its light before using external controls.") }
+        guard automationsEnabled else { throw ExternalControlError(.accessDisabled, "Enable Backlit links and other apps in Connections first.") }
+        let change: LightCommand
         switch command {
-        case .power(let on): enabled = on
-        case .toggle: enabled.toggle()
-        case .brightness(let level):
-            guard level.isFinite, (0...1).contains(level) else { throw RuntimeServices.failure("Brightness must be between 0 and 100 percent.") }
-            brightness = level
-        case .mode(let selected):
-            guard availableModes.contains(selected) else { throw RuntimeServices.failure("That behavior is unavailable on this Mac.") }
-            mode = selected
+        case .power(let on): change = LightCommand(enabled: on)
+        case .toggle: change = LightCommand(enabled: !enabled)
+        case .brightness(let level): change = LightCommand(brightness: level)
+        case .mode(let selected): change = LightCommand(mode: selected)
         }
+        try performExternal(change)
+    }
+    @discardableResult func setLogoShortcut(_ binding: LogoShortcut?, action: LogoShortcutAction) -> Bool {
+        do {
+            if let binding {
+                try binding.validate()
+                guard !logoShortcuts.contains(where:{$0.key != action && $0.value.matches(binding)}) else {
+                    throw ShortcutError(message:"That combination is assigned to another Backlit action.")
+                }
+            }
+            if let issue = onShortcutChange?(action,binding) { throw ShortcutError(message:issue) }
+            try LogoShortcutPreferences.save(binding,action:action,defaults:defaults)
+            logoShortcuts[action] = binding
+            shortcutIssues.removeValue(forKey:action)
+            return true
+        } catch { shortcutIssues[action] = error.localizedDescription; return false }
+    }
+    func setShortcutRecording(_ recording: Bool) {
+        guard recordingShortcut != recording else { return }
+        recordingShortcut = recording; shiftBrightnessKeys.resetGesture(); onShortcutRecordingChange?(recording)
+    }
+    func configureShiftBrightness(_ enabled: Bool, prompt: Bool) {
+        let driver = demo ? shiftBrightnessDriver : nil
+        guard !demo || driver != nil else { notice = "Hardware-key capture is disabled in isolated preview."; return }
+        if !enabled {
+            stopShiftBrightness(); shiftBrightnessEnabled = false
+            defaults.set(false,forKey:"shortcut.shiftBrightness.enabled")
+            shiftBrightnessStatus = "Hardware brightness keys use macOS."
+            return
+        }
+        let issue: String?
+        if let driver { issue = driver.start(prompt) }
+        else { issue = shiftBrightnessKeys.start(prompt:prompt) }
+        if let issue {
+            shiftBrightnessEnabled = false; defaults.set(false,forKey:"shortcut.shiftBrightness.enabled")
+            shiftBrightnessStatus = issue; notice = issue
+        } else {
+            shiftBrightnessEnabled = true; defaults.set(true,forKey:"shortcut.shiftBrightness.enabled")
+            shiftBrightnessStatus = "Experimental filter active. Test Shift + brightness on your keyboard; screen suppression is not yet verified."
+        }
+    }
+    private func stopShiftBrightness() {
+        if demo, let driver = shiftBrightnessDriver { driver.stop() }
+        else { shiftBrightnessKeys.stop() }
+    }
+    func performLogoShortcut(_ action: LogoShortcutAction) {
+        guard !recordingShortcut else { return }
+        if action == .toggle { enabled.toggle(); return }
+        guard mode != .battery else {
+            notice = "Battery controls its own brightness. Select a manual behavior to use brightness shortcuts."; return
+        }
+        guard lifecycleAllowsFrames, !automaticRecoveryPending, !reconnecting, !lidStopPending,
+              !externalControlContext.needsRecovery else {
+            notice = "Finish light recovery before using brightness shortcuts."; return
+        }
+        guard demo || device.available else { notice = "Compatible logo hardware is unavailable."; return }
+        guard let next = LogoBrightnessStep.next(brightness,action:action,mode:mode) else { return }
+        if brightness != next { brightness = next }
+        notice = enabled ? "Manual logo brightness: \(Effects.percent(next))%" : "Saved brightness: \(Effects.percent(next))% · logo is off"
+    }
+    private var externalControlContext: ExternalControlContext {
+        if demo, var observation = externalControlObservation?() {
+            observation.mode = mode; observation.enabled = enabled
+            observation.needsRecovery = observation.needsRecovery || recoveryBlocksAdmission || lidStopFailed
+            observation.busy = observation.busy || !lifecycleAllowsFrames || lidStopPending || lidStopper.hasOutstandingFilesystemWork
+            return observation
+        }
+        if demo && recoveryEnvironment == nil { return ExternalControlContext(needsRecovery: recoveryBlocksAdmission,
+            mode:mode,enabled:enabled,availableModes:availableModes) }
+        return ExternalControlContext(hardwareAvailable: recoveryHardwareAvailable, controlWanted: controlWanted,
+            controlling: controlling, needsRecovery: ExternalControlContext.recoveryRequired(controlling:controlling,
+                journalPresent:logoNeedsRecovery,failurePresent:hardwareFailure != nil) || recoveryBlocksAdmission || savedLidPauseNeedsReview || lidStopFailed,
+            busy: !lifecycleAllowsFrames || automaticRecoveryPending || reconnecting || lidStopPending || lidStopper.hasOutstandingFilesystemWork,
+            paused: pausedReason, mode: mode, enabled: enabled, availableModes: availableModes,
+            musicAuthorized: audioConsent, typingAuthorized: typing.permissionGranted)
+    }
+    private func performExternal(_ command: LightCommand, agent: Bool = false) throws {
+        // Legacy links/Home Assistant may save a manual level while Battery is
+        // active. Agents get an explicit automatic-brightness error instead.
+        try externalControlContext.validate(command,rejectAutomaticBrightness:agent)
+        let changed = command.mode.map { $0 != mode } == true ||
+            command.brightness.map { $0 != brightness } == true || command.enabled.map { $0 != enabled } == true
+        guard changed else { return }
+        if agent, !agentRateLimit.admit(at:ProcessInfo.processInfo.systemUptime) {
+            throw ExternalControlError(.rateLimited, "Light updates are too frequent. Wait briefly and read status before retrying.")
+        }
+        if command.enabled == false, enabled { enabled = false }
+        if let selected = command.mode, selected != mode { mode = selected }
+        if let level = command.brightness, level != brightness { brightness = level }
+        if let on = command.enabled, on != enabled { enabled = on }
         tick()
+    }
+    func agentLightState() -> AgentLightState {
+        let context = externalControlContext
+        let result: String
+        if context.needsRecovery { result = "recovery_required" }
+        else if context.busy { result = "waiting" }
+        else if pausedReason != nil { result = "paused" }
+        else if (demo && recoveryEnvironment == nil) || !controlling { result = "unavailable" }
+        else {
+            switch lastHardwareResult {
+            case .applied: result = "applied"
+            case .paused: result = "paused"
+            default: result = "waiting"
+            }
+        }
+        let age = ProcessInfo.processInfo.systemUptime - lastSourceSample
+        return AgentLightState(access:mcpAccess, enabled:enabled, mode:mode.externalName,
+            manualBrightnessPercent:Effects.clamp(brightness)*100, calculatedOutputPercent:Effects.clamp(output)*100,
+            hardwareEnabled:cachedLogoEnabled, hardwareSampleAgeSeconds:age.isFinite ? max(0,age) : nil,
+            hardwareSupported:context.hardwareAvailable, controlling:controlling, preview:demo, recoveryRequired:context.needsRecovery, busy:context.busy,
+            paused:pausedReason, applicationResult:result, observedAt:ISO8601DateFormatter().string(from:Date()),
+            availableModes:GlowMode.allCases.map { selected in
+                let reason: String?
+                if !availableModes.contains(selected) { reason = "Unavailable on this Mac" }
+                else if selected == .music && !audioConsent { reason = "Select Music in Backlit and allow system audio first" }
+                else if selected == .typing && !context.typingAuthorized { reason = "Enable typing access in Backlit first" }
+                else { reason = nil }
+                return .init(name:selected.externalName, selectable:reason == nil, reason:reason)
+            })
     }
     func repairAndResume() {
         guard !hardwareOperationInProgress else { return }
         pendingLifecycleRecovery = nil
-        restore()
-        if !device.needsRecovery { controlWanted = !demo && device.available; tick(); announceLightReadiness() }
+        repairResumeAllowed = true
+        defer { repairResumeAllowed = false }
+        guard restore(), repairResumeAllowed, !isStopping, !controlOffPending,
+              canReconnectLight else { return }
+        controlWanted = true
+        tick(); announceLightReadiness()
     }
     func setControl(_ wanted: Bool) {
         if !wanted {
+            repairResumeAllowed = false
             ambientResumeAllowed = false
             invalidateLightReadyNotice()
             // Withdrawal is allowed even inside a verification-pumped callback.
@@ -728,6 +909,7 @@ enum MusicCapturePolicy {
         }
         guard !hardwareOperationInProgress, !lidCleanupInProgress else { notice = "Light recovery is still in progress."; return }
         if demo && hardwareApply == nil { notice = "This is an isolated preview. Your real logo is unchanged."; return }
+        guard !wanted || !recoveryBlocksAdmission else { notice = "Restore your light before starting another session."; return }
         controlWanted = wanted
         controlOffPending = false
         savedLidRecoveryAllowed = wanted
@@ -850,8 +1032,10 @@ enum MusicCapturePolicy {
         }
         guard restored else { throw RuntimeServices.failure("Light recovery is still in progress.") }
     }
-    func restore() {
-        guard !demo, !hardwareOperationInProgress else { return }
+    @discardableResult func restore() -> Bool {
+        // A preview must supply every native action before testing this path.
+        let isolated = demo && recoveryEnvironment != nil && hardwareRestore != nil && hardwareApply != nil
+        guard (!demo || isolated), !hardwareOperationInProgress else { return false }
         pendingLifecycleRecovery = nil
         savedLidRecoveryAllowed = false
         reconnecting = false
@@ -859,13 +1043,26 @@ enum MusicCapturePolicy {
         musicHardwareReady = false
         if audioRunning || audioStarting { stopAudio() }
         if lidStopPending || watcher?.isRunning == true {
-            stopLid(); notice = "Closed-lid cleanup is in progress. Retry Restore Light when it finishes."; return
+            stopLid(); notice = "Closed-lid cleanup is in progress. Retry Restore Light when it finishes."; return false
         }
+        var restored = false
         do {
             try withHardwareRecovery {
-                try device.restore(); controlling = false
+                // A failed/refused later stage cannot be mistaken for success
+                // merely because the first stage retired its own journal.
+                restorationUnconfirmed = true
+                if isolated, let hardwareRestore { try hardwareRestore() }
+                else { try device.restore() }
+                controlling = false
                 let forcePowerRestore = watcher != nil
-                guard try finishPowerRecovery({ try RuntimeServices.repairLid(forcePowerRestore: forcePowerRestore) }) else { return }
+                guard try finishPowerRecovery({
+                    if isolated, let recoveryEnvironment { try recoveryEnvironment.repairLid(forcePowerRestore) }
+                    else { try RuntimeServices.repairLid(forcePowerRestore: forcePowerRestore) }
+                }), !logoNeedsRecovery, !lidNeedsRecovery else {
+                    throw RuntimeServices.failure("Light or lid recovery remains unconfirmed. Recovery was retained.")
+                }
+                restorationUnconfirmed = false
+                hardwareFailure = nil
                 if lidIntentController.intent?.savedPause?.needsQualifiedHandback == true {
                     notice = "Restoration was requested. Native handback remains unconfirmed, so the saved closed-lid choice stays paused."
                     return
@@ -873,9 +1070,11 @@ enum MusicCapturePolicy {
                     lidIntentController.block(detail: "Your light was restored. Turn closed-lid lighting off and on to retry.")
                 }
                 notice = "The saved logo and lid settings were restored."
+                restored = true
             }
         }
-        catch { self.error = error.localizedDescription }
+        catch { self.error = error.localizedDescription; controlWanted = false }
+        return restored && !recoveryBlocksAdmission && !lidStopPending && !lidStopper.hasOutstandingFilesystemWork
     }
     /// Owned journals exist during healthy operation too. Readiness therefore
     /// requires an applied frame, not a waiting helper or a safely paused fade.
@@ -1129,6 +1328,8 @@ enum MusicCapturePolicy {
     private func finishPowerRecovery(_ repair: () throws -> Void) rethrows -> Bool {
         guard !lidStopPending, !lidStopper.hasOutstandingFilesystemWork, watcher?.isRunning != true else { return false }
         try repair()
+        // A successful call without fresh journal absence is not handback.
+        guard !lidNeedsRecovery else { return false }
         watcher = nil; lease = nil; lidStopFailed = false
         return true
     }
@@ -1178,7 +1379,7 @@ enum MusicCapturePolicy {
         }
     }
     private func ambientCleanupSafe(isolated: Bool) -> Bool {
-        !controlling && !hardwareRecoveryInProgress && !hardwareApplyInProgress &&
+        !controlling && !recoveryBlocksAdmission && !ownedLidAwaitingCleanup && !hardwareRecoveryInProgress && !hardwareApplyInProgress &&
             !lidCleanupInProgress && !lidStopPending && !lidStopFailed && watcher == nil &&
             !lidStopper.hasOutstandingFilesystemWork && !automaticRecoveryPending &&
             !isStopping && !controlOffPending && hardwareFailure == nil &&
@@ -1203,10 +1404,54 @@ enum MusicCapturePolicy {
         guard !demo else { notice = "Network sharing is disabled in isolated preview."; return }
         bridge.stop(); bridgeEnabled = false; bridgeLAN = lan
         do {
-            if enabled { try bridge.start(lan:lan,token:BridgeToken.value()); bridgeEnabled = true }
+            var agentToken: String?
+            if mcpAccess != .off {
+                do { agentToken = try BridgeToken.value(account:BridgeToken.agentAccount,create:false,interactive:false) }
+                catch {
+                    mcpAccess = .off; defaults.set("off",forKey:"mcp.access")
+                    self.error = "The AI connection was switched off because its Keychain key is unavailable. Enable it again in Connections."
+                }
+            }
+            if enabled || mcpAccess != .off {
+                try bridge.start(lan:enabled && lan,token:enabled ? BridgeToken.value() : nil,
+                                 agentToken:agentToken,agentAccess:mcpAccess)
+                bridgeEnabled = enabled
+            }
             else { bridgeStatus = "Not connected" }
             defaults.set(enabled,forKey:"bridge.enabled"); defaults.set(lan,forKey:"bridge.lan")
+        } catch {
+            bridge.stop(); bridgeEnabled = false; mcpAccess = .off
+            defaults.set(false,forKey:"bridge.enabled"); defaults.set("off",forKey:"mcp.access")
+            self.error = error.localizedDescription
+        }
+    }
+    func configureMCPAccess(_ access: MCPAccess) {
+        guard !demo else { notice = "AI connections are disabled in isolated preview."; return }
+        do {
+            if access != .off { _ = try BridgeToken.value(account:BridgeToken.agentAccount) }
+            mcpAccess = access; defaults.set(access.rawValue,forKey:"mcp.access")
+            configureBridge(enabled:bridgeEnabled,lan:bridgeLAN)
         } catch { self.error = error.localizedDescription }
+    }
+    func regenerateMCPKey() {
+        guard !demo else { return }
+        let alert = NSAlert(); alert.messageText = "Replace the AI connection key?"
+        alert.informativeText = "The previous key stops working. Your local assistants can reconnect while AI access stays enabled. The Home Assistant key stays the same."
+        alert.addButton(withTitle:"Replace Key"); alert.addButton(withTitle:"Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let priorAccess = mcpAccess
+        configureMCPAccess(.off)
+        do {
+            _ = try BridgeToken.regenerate(account:BridgeToken.agentAccount)
+            configureMCPAccess(priorAccess)
+            notice = "The AI connection key was replaced. Turn AI access off to stop all assistant connections."
+        } catch { self.error = "AI access remains off because its key could not be replaced. " + error.localizedDescription }
+    }
+    func copyMCPSetup(claude: Bool) {
+        guard !demo, mcpAccess != .off else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(MCPSetup.command(claude:claude),forType:.string)
+        notice = "Setup command copied. Run it locally in your agent's terminal, then check its MCP connections."
     }
     func copyToggleLink() {
         guard !demo else { return }
@@ -1238,7 +1483,7 @@ enum MusicCapturePolicy {
             bridge.stop(); bridgeEnabled = false; bridgeStatus = "Not connected"
         }, regenerate: { try BridgeToken.regenerate() }) {
         case .rotated(let restartSharing):
-            if restartSharing { configureBridge(enabled: true, lan: lan) }
+            if restartSharing || mcpAccess != .off { configureBridge(enabled: restartSharing, lan: lan) }
             notice = "A new pairing key was created. Copy it and update Home Assistant; the old key no longer works."
         case .failed(let reason):
             // Also remember Off, so a relaunch cannot bring the old key back.
@@ -1257,9 +1502,12 @@ enum MusicCapturePolicy {
     func resumeAfterUpdateFailure() {
         guard isStopping && terminationApproved else { return }
         isStopping = false; terminationApproved = false
-        controlWanted = !demo && device.available && !device.needsRecovery
+        controlWanted = canReconnectLight
         startPowerMonitoring()
-        if bridgeEnabled { configureBridge(enabled: true, lan: bridgeLAN) }
+        if bridgeEnabled || mcpAccess != .off { configureBridge(enabled: bridgeEnabled, lan: bridgeLAN) }
+        if defaults.bool(forKey:"shortcut.shiftBrightness.enabled") {
+            configureShiftBrightness(true, prompt:false)
+        }
         configureTimer(); requestFrame()
         resumeAudioAfterInterruption()
     }
@@ -1268,6 +1516,7 @@ enum MusicCapturePolicy {
         quitRunLoop.request { NSApp.terminate(nil) }
     }
     func prepareQuit(reason: QuitReason = .userInitiated, confirmOff: (() -> NSApplication.ModalResponse)? = nil) -> Bool {
+        repairResumeAllowed = false
         ambientResumeAllowed = false
         guard !hardwareOperationInProgress, !savedLidCheckInProgress else {
             // Withdraw automatic rearm, but do not schedule restoration here:
@@ -1275,6 +1524,11 @@ enum MusicCapturePolicy {
             savedLidRecoveryAllowed = false; controlWanted = false
             pendingLifecycleRecovery = nil; reconnecting = false
             notice = "Light recovery is still in progress. Retry Quit when it finishes."
+            return false
+        }
+        guard !recoveryBlocksAdmission else {
+            controlWanted = false
+            notice = "Restore your light before quitting; the previous lid session still needs recovery."
             return false
         }
         if terminationApproved { return true }
@@ -1302,7 +1556,8 @@ enum MusicCapturePolicy {
         }
         stopLid(); releaseHardware()
         if controlling { cancelStopping(); return false }
-        timer?.invalidate(); bridge.stop(); stopAudio(); terminationApproved = true; return true
+        guard !recoveryBlocksAdmission else { cancelStopping(); return false }
+        timer?.invalidate(); bridge.stop(); stopAudio(); stopShiftBrightness(); terminationApproved = true; return true
     }
     private func cancelStopping() {
         guard isStopping else { return }

@@ -1,16 +1,24 @@
 import Foundation
 import Network
 import Security
+import LocalAuthentication
 
 enum BridgeToken {
     static let account = "home-assistant"
-    static func value() throws -> String {
+    static let agentAccount = "mcp"
+    static func value(account: String = BridgeToken.account, create: Bool = true, interactive: Bool = true) throws -> String {
         let query: [String:Any] = [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:"local.backlit",kSecAttrAccount as String:account]
         var result: CFTypeRef?
         var read = query; read[kSecReturnData as String] = true; read[kSecMatchLimit as String] = kSecMatchLimitOne
+        if !interactive {
+            let context = LAContext(); context.interactionNotAllowed = true
+            read[kSecUseAuthenticationContext as String] = context
+        }
         let status = SecItemCopyMatching(read as CFDictionary,&result)
-        if status == errSecSuccess, let data = result as? Data, let token = String(data:data,encoding:.utf8) { return token }
-        guard status == errSecItemNotFound else { throw RuntimeServices.failure("Keychain could not read the Home Assistant key (\(status)).") }
+        if status == errSecSuccess, let data = result as? Data, let token = String(data:data,encoding:.utf8), !token.isEmpty, token.utf8.count <= 128 { return token }
+        guard status == errSecItemNotFound, create else {
+            throw ExternalControlError(.authRequired, "Open Backlit Connections and enable this connection. Keychain access is required (\(status)).")
+        }
         var random = [UInt8](repeating:0,count:32)
         guard SecRandomCopyBytes(kSecRandomDefault,random.count,&random) == errSecSuccess else { throw RuntimeServices.failure("Could not generate a pairing key.") }
         let token = Data(random).base64EncodedString()
@@ -20,11 +28,11 @@ enum BridgeToken {
     }
     /// Replaces the stored key with a new random one. The caller restarts the
     /// listener so the old key stops working immediately.
-    @discardableResult static func regenerate() throws -> String {
+    @discardableResult static func regenerate(account: String = BridgeToken.account) throws -> String {
         let query: [String:Any] = [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:"local.backlit",kSecAttrAccount as String:account]
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw RuntimeServices.failure("Keychain could not remove the old pairing key (\(status)).") }
-        return try value()
+        return try value(account: account)
     }
 }
 
@@ -111,6 +119,9 @@ struct LightCommand {
     var enabled: Bool?
     var brightness: Double?
     var mode: GlowMode?
+    init(enabled: Bool? = nil, brightness: Double? = nil, mode: GlowMode? = nil) {
+        self.enabled = enabled; self.brightness = brightness; self.mode = mode
+    }
     init(data: Data) throws {
         guard let value = try JSONSerialization.jsonObject(with:data) as? [String:Any], !value.isEmpty,
               Set(value.keys).isSubset(of:["enabled","brightness","effect"]) else { throw RuntimeServices.failure("Expected enabled, brightness, or effect.") }
@@ -168,7 +179,11 @@ final class HomeBridge {
     var state: (() -> [String:Any])?
     var command: ((LightCommand) throws -> Void)?
     var onStatus: ((String) -> Void)?
-    func start(lan: Bool, token: String, port: UInt16 = 48261) throws {
+    var onFailure: ((String) -> Void)?
+    var agentState: (() throws -> AgentLightState)?
+    var agentCommand: ((LightCommand) throws -> Void)?
+    func start(lan: Bool, token: String?, port: UInt16 = 48261,
+               agentToken: String? = nil, agentAccess: MCPAccess = .off) throws {
         stop()
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host:lan ? .ipv4(.any) : .ipv4(.loopback),port:NWEndpoint.Port(rawValue:port)!)
@@ -185,7 +200,9 @@ final class HomeBridge {
                 guard current.isActive else { return }
                 switch state {
                 case .ready: self?.onStatus?(lan ? "Available on your local network" : "Available on this Mac")
-                case .failed(let error): self?.onStatus?(error.localizedDescription)
+                case .failed(let error):
+                    self?.onStatus?(error.localizedDescription)
+                    self?.onFailure?(error.localizedDescription)
                 default: break
                 }
             }
@@ -197,7 +214,8 @@ final class HomeBridge {
                 if case .failed = state, let connection { current?.detach(connection) }
             }
             connection.start(queue:self.queue)
-            self.receive(connection,data:Data(),token:token,session:current)
+            self.receive(connection,data:Data(),token:token,agentToken:agentToken,
+                         agentAccess:agentAccess,session:current)
             self.queue.asyncAfter(deadline:.now()+5) { [weak connection, weak current = current] in
                 if let connection { current?.detach(connection); connection.cancel() }
             }
@@ -207,7 +225,8 @@ final class HomeBridge {
             let timeout = DispatchWorkItem { [weak self] in
                 guard let self, self.generation == requestedGeneration, !self.listenerStarted else { return }
                 self.stop()
-                self.onStatus?("The previous local connection is still closing. Turn sharing off and on to retry.")
+                let message = "The previous local connection is still closing. Turn sharing off and on to retry."
+                self.onStatus?(message); self.onFailure?(message)
             }
             pendingDeadline = timeout
             DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
@@ -240,7 +259,12 @@ final class HomeBridge {
         }
         listener = nil; listenerStarted = false
     }
-    private func receive(_ connection: NWConnection, data: Data, token: String, session: BridgeSession) {
+    static func isLoopback(_ endpoint: NWEndpoint) -> Bool {
+        guard case .hostPort(let host, _) = endpoint else { return false }
+        return host == .ipv4(.loopback) || host == .ipv6(.loopback)
+    }
+    private func receive(_ connection: NWConnection, data: Data, token: String?, agentToken: String?,
+                         agentAccess: MCPAccess, session: BridgeSession) {
         guard session.isActive else { connection.cancel(); return }
         connection.receive(minimumIncompleteLength:1,maximumLength:16384) { [weak self] bytes,_,complete,error in
             guard let self, session.isActive else { connection.cancel(); return }
@@ -248,13 +272,39 @@ final class HomeBridge {
             do {
                 guard let request = try BridgeRequest.parse(combined) else {
                     if complete || error != nil { connection.cancel() }
-                    else { self.receive(connection,data:combined,token:token,session:session) }
+                    else { self.receive(connection,data:combined,token:token,agentToken:agentToken,agentAccess:agentAccess,session:session) }
                     return
                 }
-                guard request.authorized(token) else { self.send(connection,status:401,value:["error":"Pairing key required"]); return }
+                let agentRoute = request.path == "/v1/agent/state" || request.path == "/v1/agent/light"
+                if agentRoute {
+                    guard agentAccess != .off, Self.isLoopback(connection.endpoint),
+                          let agentToken, request.authorized(agentToken) else {
+                        self.send(connection,status:401,value:["code":"AUTH_REQUIRED","error":"AI connection key required"]); return
+                    }
+                } else {
+                    guard let token, request.authorized(token) else { self.send(connection,status:401,value:["error":"Pairing key required"]); return }
+                }
                 DispatchQueue.main.async {
                     guard session.isActive else { connection.cancel(); return }
                     do {
+                        if agentRoute {
+                            if request.method == "POST" && request.path == "/v1/agent/light" {
+                                guard agentAccess == .control else {
+                                    throw ExternalControlError(.accessDisabled, "Allow light changes in Backlit Connections first.")
+                                }
+                                guard let command = self.agentCommand else { throw ExternalControlError(.unavailable, "Backlit is not ready.") }
+                                try command(LightCommand(data:request.body))
+                            } else if request.method != "GET" || request.path != "/v1/agent/state" {
+                                self.send(connection,status:404,value:["code":"INVALID_ARGUMENT","error":"Unknown AI endpoint"]); return
+                            }
+                            guard let state = self.agentState else { throw ExternalControlError(.unavailable, "Backlit is not ready.") }
+                            let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+                            guard let value = try JSONSerialization.jsonObject(with:encoder.encode(try state())) as? [String:Any] else {
+                                throw ExternalControlError(.unavailable, "Backlit status is unavailable.")
+                            }
+                            self.send(connection,status:200,value:value)
+                            return
+                        }
                         if request.method == "POST" && request.path == "/v1/light" {
                             guard let command = self.command else { throw RuntimeServices.failure("Light control is unavailable.") }
                             try command(LightCommand(data:request.body))
@@ -262,7 +312,10 @@ final class HomeBridge {
                             self.send(connection,status:404,value:["error":"Unknown endpoint"]); return
                         }
                         self.send(connection,status:200,value:self.state?() ?? [:])
-                    } catch { self.send(connection,status:400,value:["error":error.localizedDescription]) }
+                    } catch let error as ExternalControlError {
+                        self.send(connection,status:error.code == .accessDisabled ? 403 : 400,
+                                  value:["code":error.code.rawValue,"error":error.message])
+                    } catch { self.send(connection,status:400,value:["code":"INVALID_ARGUMENT","error":error.localizedDescription]) }
                 }
             } catch { self.send(connection,status:400,value:["error":"Invalid request"] ) }
         }

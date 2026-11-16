@@ -10,7 +10,8 @@ import Foundation
 ///
 /// What it does is unchanged: save the two ambient brightness limits once,
 /// replace them with flat limits (or put the saved ones back), restart the
-/// brightness service, and on restore remove the saved copy.
+/// brightness service, and on restore remove the saved copy only after readback
+/// confirms both original limits (including an originally absent limit).
 enum AmbientOverrideScript {
     static let keys = ["LEPWMLuxToMinNitsRestrictionMapping", "LEPWMLuxToMaxNitsRestrictionMapping"]
     static let minimumNits = "12.5"
@@ -93,6 +94,19 @@ enum AmbientOverrideScript {
                 /usr/bin/defaults write "$domain" "$key" "$saved"
               else
                 /usr/bin/defaults delete "$domain" "$key" >/dev/null 2>&1 || true
+              fi
+            done
+            # A failed delete is harmless only if the key is already absent.
+            # Command success alone is not enough: retain the original backup
+            # until fresh readback matches every original value or absence.
+            /usr/bin/defaults export "$domain" "$work/restored.plist" >/dev/null 2>&1 || fail 'The restored brightness limits could not be read. Recovery was retained.'
+            /usr/bin/plutil -lint "$work/restored.plist" >/dev/null 2>&1 || fail 'The restored brightness limits are unreadable. Recovery was retained.'
+            for key in \(keyList); do
+              if /usr/bin/plutil -extract "$key" xml1 -o "$work/expected.xml" "$backup" >/dev/null 2>&1; then
+                /usr/bin/plutil -extract "$key" xml1 -o "$work/observed.xml" "$work/restored.plist" >/dev/null 2>&1 || fail 'A restored brightness limit is missing. Recovery was retained.'
+                /usr/bin/cmp -s "$work/expected.xml" "$work/observed.xml" || fail 'The restored brightness limits did not match. Recovery was retained.'
+              elif /usr/bin/plutil -extract "$key" xml1 -o "$work/observed.xml" "$work/restored.plist" >/dev/null 2>&1; then
+                fail 'A brightness limit that was originally absent is still present. Recovery was retained.'
               fi
             done
             \(restart) >/dev/null 2>&1 || true

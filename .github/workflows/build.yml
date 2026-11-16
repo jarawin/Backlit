@@ -65,6 +65,7 @@ jobs:
       - name: Compile and package app
         run: |
           bash scripts/build.sh
+          python3 scripts/check-mcp.py dist/Backlit.app/Contents/MacOS/Backlit
           test "$(lipo -archs dist/Backlit.app/Contents/MacOS/Backlit)" = arm64
           bash scripts/package.sh
       - name: Upload compiled packages

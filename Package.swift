@@ -5,9 +5,12 @@ let package = Package(
     name: "Backlit",
     platforms: [.macOS(.v14)],
     products: [.executable(name: "Backlit", targets: ["Backlit"])],
-    dependencies: [.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1")],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk", exact: "0.12.1")
+    ],
     targets: [
-        .executableTarget(name: "Backlit", dependencies: [.product(name: "Sparkle", package: "Sparkle")], linkerSettings: [.linkedFramework("Carbon"), .linkedFramework("IOKit"), .linkedFramework("ScreenCaptureKit"), .linkedFramework("CoreAudio"), .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
+        .executableTarget(name: "Backlit", dependencies: [.product(name: "Sparkle", package: "Sparkle"), .product(name: "MCP", package: "swift-sdk")], linkerSettings: [.linkedFramework("Carbon"), .linkedFramework("IOKit"), .linkedFramework("ScreenCaptureKit"), .linkedFramework("CoreAudio"), .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
         .testTarget(name: "BacklitTests", dependencies: ["Backlit"])
     ]
 )

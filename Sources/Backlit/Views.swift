@@ -73,7 +73,7 @@ struct LogoPreview: View {
                         statusHeading
                         VStack(alignment: .trailing, spacing: 10) {
                             Toggle(model.t("Logo on","標誌開啟"),isOn:$model.enabled).toggleStyle(.switch).labelsHidden().controlSize(.small).help("Turn logo output on or off · \(model.shortcutLabel)")
-                            if !model.demo && (model.device.needsRecovery || model.hardwareFailure != nil) && (!model.controlWanted || !model.controlling) {
+                            if !model.demo && model.needsLightRecovery && (!model.controlWanted || !model.controlling) {
                                 Button(model.t("Restore Light","還原燈光")){model.repairAndResume()}.buttonStyle(.bordered).controlSize(.small)
                             } else if !model.demo && model.savedLidPauseNeedsReview {
                                 Button("Review Closed-lid Pause") { model.selectedPage = "settings" }.buttonStyle(.bordered).controlSize(.small)
@@ -234,6 +234,7 @@ struct ConnectionsPage: View {
     var body: some View {
         PageHeading(eyebrow:"BACKLIT",title:model.t("Connections","連接"),subtitle:model.t("Optional connections for agents and automation.","代理程式和自動化的選用連接。"))
         AutomationConnections(model: model)
+        MCPConnections(model: model)
         Surface(model.t("Coding companions","程式夥伴")) {
             ForEach(CodingAgent.allCases) { agent in
                 let connected = !model.demo && AgentBridge.connected(agent)
@@ -275,7 +276,6 @@ struct ConnectionsPage: View {
 
 struct SettingsPage: View {
     @ObservedObject var model: AppModel
-    @State private var recording = false
     var body: some View {
         Text(model.t("Settings","設定")).font(.system(size:31,weight:.semibold))
         Surface(model.t("General","融入你的 Mac")) {
@@ -289,7 +289,7 @@ struct SettingsPage: View {
             Divider()
             settingRow(model.t("Open at login","登入時開啟"),"Keep Backlit a click away in the menu bar.") {Toggle("Open at login",isOn:Binding(get:{model.loginEnabled},set:{model.setLogin($0)})).labelsHidden().toggleStyle(.switch)}
             Divider()
-            settingRow(model.t("Logo shortcut","標誌快捷鍵"),"Toggle the logo from any app. Option-click the menu icon also works.") {Button(model.shortcutLabel){recording=true}.frame(width:150)}
+            LogoShortcutControls(model:model)
         }
         Surface(model.t("Logo and power","進階控制")) {
             settingRow(model.t("Keep logo on with lid closed","闔上螢幕時保持發光"),model.t("Keeps this Mac awake and may leave its built-in screen lit while closed. Limited to 30 minutes; also stops for low battery, heat or Low Power Mode. Keep it on a hard, ventilated surface, never in a bag.","闔蓋時 Mac 保持喚醒，內建螢幕可能仍亮著。最長 30 分鐘；電量不足、過熱或開啟低耗電模式時也會停止。請放在通風的硬質平面上，切勿放入袋中。")) {Toggle("Keep logo on with lid closed",isOn:Binding(get:{model.lidRequested},set:{model.setLid($0)})).labelsHidden().toggleStyle(.switch)}
@@ -297,7 +297,7 @@ struct SettingsPage: View {
             LidDurationControls(model: model)
             Divider()
             settingRow(model.t("Override ambient brightness limit","任何環境下的全亮度"),"Optional ambient-light override. macOS asks for administrator approval. Your previous limits are saved.") {Toggle("Override ambient brightness limit",isOn:Binding(get:{model.ambientUnlocked},set:{model.setAmbient($0)})).labelsHidden().toggleStyle(.switch)}
-            if !model.demo && (model.device.needsRecovery || model.savedLidPauseNeedsReview) && (!model.controlWanted || !model.controlling) {
+            if !model.demo && (model.needsLightRecovery || model.savedLidPauseNeedsReview) && (!model.controlWanted || !model.controlling) {
                 Divider()
                 settingRow(model.t("Restore your light","還原你的燈光"), model.savedLidRecoveryUnconfirmed
                     ? "Request restoration. Native handback remains unconfirmed; your saved closed-lid choice stays paused."
@@ -310,7 +310,6 @@ struct SettingsPage: View {
             HStack {Link("GitHub ↗",destination:URL(string:"https://github.com/t0nyz0/Backlit")!);Text("·").foregroundStyle(.tertiary);Link("t0nyz.com ↗",destination:URL(string:"https://t0nyz.com")!);Spacer();Link("☕ Buy me a coffee",destination:URL(string:"https://buymeacoffee.com/tonyz")!)}.font(.system(size:12))
         }
         Text("The logo hardware produces white light. Backlit changes its brightness and rhythm, never the screen brightness. ").font(.system(size:11)).foregroundStyle(.secondary)
-            .sheet(isPresented:$recording){VStack(spacing:20){Text("Press your new shortcut").font(.title2);Text("Use Command, Control, or Option with a key.").foregroundStyle(.secondary);ShortcutRecorder{key,mods,label in model.shortcutKey=key;model.shortcutModifiers=mods;model.shortcutLabel=label;model.defaults.set(Int(key),forKey:"shortcut.key");model.defaults.set(Int(mods),forKey:"shortcut.modifiers");model.defaults.set(label,forKey:"shortcut.label");NotificationCenter.default.post(name:.init("Backlit.Shortcut"),object:nil);recording=false}.frame(width:300,height:70);Button("Cancel"){recording=false}}.padding(32)}
     }
     func settingRow<Accessory:View>(_ title: String,_ subtitle: String,@ViewBuilder accessory:()->Accessory) -> some View {
         HStack(spacing:22){VStack(alignment:.leading,spacing:5){Text(title).font(.system(size:13,weight:.medium));Text(subtitle).font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)};Spacer(minLength:20);accessory()}
@@ -346,22 +345,22 @@ struct LidDurationControls: View {
 }
 
 struct ShortcutRecorder: NSViewRepresentable {
-    var capture: (UInt32,UInt32,String)->Void
-    func makeNSView(context:Context)->KeyView {let view=KeyView();view.capture=capture;DispatchQueue.main.async{view.window?.makeFirstResponder(view)};return view}
-    func updateNSView(_ view:KeyView,context:Context){}
+    var capture: (LogoShortcut)->Void
+    var invalid: (String)->Void
+    var cancel: ()->Void
+    func makeNSView(context:Context)->KeyView {let view=KeyView();updateNSView(view,context:context);return view}
+    func updateNSView(_ view:KeyView,context:Context){view.capture=capture;view.invalid=invalid;view.cancel=cancel}
     final class KeyView:NSView {
-        var capture:((UInt32,UInt32,String)->Void)?
+        var capture:((LogoShortcut)->Void)?
+        var invalid:((String)->Void)?
+        var cancel:(()->Void)?
         override var acceptsFirstResponder:Bool {true}
+        override func viewDidMoveToWindow() {super.viewDidMoveToWindow();DispatchQueue.main.async { [weak self] in if let self {self.window?.makeFirstResponder(self)} }}
         override func keyDown(with event:NSEvent) {
-            let flags=event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            guard flags.contains(.command)||flags.contains(.control)||flags.contains(.option),let key=event.charactersIgnoringModifiers,!key.isEmpty else {NSSound.beep();return}
-            var carbon:UInt32=0;var label=""
-            if flags.contains(.control){carbon |= UInt32(controlKey);label += "⌃"}
-            if flags.contains(.option){carbon |= UInt32(optionKey);label += "⌥"}
-            if flags.contains(.shift){carbon |= UInt32(shiftKey);label += "⇧"}
-            if flags.contains(.command){carbon |= UInt32(cmdKey);label += "⌘"}
-            capture?(UInt32(event.keyCode),carbon,label+key.uppercased())
+            if event.keyCode == 53, event.modifierFlags.intersection([.command,.control,.option,.shift]).isEmpty {cancel?();return}
+            do {capture?(try LogoShortcut.capture(event))} catch {invalid?(error.localizedDescription)}
         }
+        override func performKeyEquivalent(with event:NSEvent)->Bool {keyDown(with:event);return true}
         override func draw(_ dirtyRect:NSRect){("Waiting for keys…" as NSString).draw(at:NSPoint(x:70,y:24),withAttributes:[.font:NSFont.systemFont(ofSize:15),.foregroundColor:NSColor.secondaryLabelColor])}
     }
 }
@@ -424,7 +423,7 @@ struct MenuView: View {
             } else if model.mode == .agents {
                 Label(model.agents.isEmpty ? "Waiting for an agent" : model.agentState.rawValue.capitalized,systemImage:"terminal").font(.system(size:11)).foregroundStyle(.secondary)
             }
-            if !model.demo && model.device.needsRecovery && (!model.controlWanted || !model.controlling) {
+            if !model.demo && model.needsLightRecovery && (!model.controlWanted || !model.controlling) {
                 Button(model.t("Restore Light","還原燈光")){model.repairAndResume()}.buttonStyle(.borderedProminent).tint(.primary)
             }
             Divider()
