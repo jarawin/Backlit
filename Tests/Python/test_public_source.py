@@ -18,7 +18,7 @@ import zipfile
 
 PROJECT = Path(__file__).resolve().parents[2]
 PUBLIC_DOCS = [
-    'HOME-ASSISTANT.md', 'MCP.md', 'SHORTCUTS.md', 'PRIVACY.md',
+    'HOME-ASSISTANT.md', 'MCP.md', 'SHORTCUTS.md', 'ICON.md', 'PRIVACY.md',
     'ATTRIBUTION.md', 'VALIDATION.md', 'RELEASE.md',
 ]
 
@@ -56,10 +56,12 @@ class PublicSourceArchiveTests(unittest.TestCase):
                    (PROJECT / 'scripts/public-source.sh').read_text())
         for name in PUBLIC_DOCS:
             self.write('docs/' + name, (PROJECT / 'docs' / name).read_text())
+        self.write('docs/media/README.md',
+                   (PROJECT / 'docs/media/README.md').read_text())
         self.write('docs/header.png', 'placeholder public image\n')
         # Stub public linked assets, but keep the project's real documentation
         # and links. New README links expose future source-allowlist omissions.
-        for document in [self.root / 'README.md', *self.root.joinpath('docs').glob('*.md')]:
+        for document in [self.root / 'README.md', *self.root.joinpath('docs').rglob('*.md')]:
             for target in local_targets(document.read_text()):
                 path = document.parent / target
                 if not path.exists():
@@ -97,7 +99,7 @@ class PublicSourceArchiveTests(unittest.TestCase):
     def test_exported_archive_contains_current_docs_and_resolves_public_links(self):
         with self.export() as archive:
             names = set(archive.namelist())
-            for name in ['MCP.md', 'SHORTCUTS.md']:
+            for name in ['MCP.md', 'SHORTCUTS.md', 'ICON.md']:
                 self.assertEqual(archive.read('Backlit/docs/' + name),
                                  (PROJECT / 'docs' / name).read_bytes())
             documents = [name for name in names if name == 'Backlit/README.md' or
